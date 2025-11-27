@@ -1,176 +1,244 @@
+"""
+Sistema di monitoraggio principale per Azure VM
+Coordina tutti i componenti del monitoraggio
+Versione semplificata e modulare
+"""
+
 import time
 import threading
 from datetime import datetime
-from azure.mgmt.compute import ComputeManagementClient
-from azure.core.exceptions import ResourceNotFoundError
 
-from .azure_config import AZURE_CONFIG, get_azure_credentials
+# Import dei moduli separati
+from src.azure_controller import AzureVMController
+from src.operation_tracker import OperationTracker
+from src.vm_status_manager import VMStatusManager
+from src.auto_recovery import AutoRecoverySystem
+from src.azure_config import AZURE_CONFIG
 
-class AzureVMController:
-    def __init__(self):
-        self.credentials = get_azure_credentials()
-        self.compute_client = ComputeManagementClient(self.credentials, AZURE_CONFIG["subscription_id"])
-    
-    def get_vm_status(self, vm_config):
-        try:
-            instance_view = self.compute_client.virtual_machines.instance_view(
-                vm_config["resource_group"], vm_config["name"]
-            )
-            for status in instance_view.statuses:
-                if status.code.startswith('PowerState'):
-                    if 'running' in status.code.lower():
-                        return 'running'
-                    elif 'stopped' in status.code.lower():
-                        return 'stopped'
-            return 'unknown'
-        except ResourceNotFoundError:
-            return 'not_found'
-        except Exception as e:
-            print(f" Errore VM {vm_config['name']}: {e}")
-            return 'error'
-    
-    def restart_vm(self, vm_config):
-        try:
-            async_op = self.compute_client.virtual_machines.begin_restart(
-                vm_config["resource_group"], vm_config["name"]
-            )
-            async_op.wait()
-            return True, "VM riavviata"
-        except Exception as e:
-            return False, f"Errore: {str(e)}"
-    
-    def start_vm(self, vm_config):
-        try:
-            async_op = self.compute_client.virtual_machines.begin_start(
-                vm_config["resource_group"], vm_config["name"]
-            )
-            async_op.wait()
-            return True, "VM avviata"
-        except Exception as e:
-            return False, f"Errore: {str(e)}"
-    
-    def stop_vm(self, vm_config):
-        try:
-            async_op = self.compute_client.virtual_machines.begin_power_off(
-                vm_config["resource_group"], vm_config["name"]
-            )
-            async_op.wait()
-            return True, "VM arrestata"
-        except Exception as e:
-            return False, f"Errore: {str(e)}"
+# Configurazione
+class Config:
+    POLLING_INTERVAL = 30  # secondi tra un controllo e l'altro
+    NODES = AZURE_CONFIG["vms"]  # Lista VM da configurazione
 
 class MonitorService:
+    """Servizio di monitoraggio principale - Coordina tutti i componenti"""
+    
     def __init__(self):
-        self.azure_controller = AzureVMController()
-        self.is_monitoring = False
-        self.monitor_thread = None
-        self.manual_operations = {}
-        self.vm_states = {}
+        # Inizializza tutti i componenti
+        self.azure_controller = AzureVMController()           # Comunicazione con Azure
+        self.operation_tracker = OperationTracker()           # Tracciamento operazioni
+        self.status_manager = VMStatusManager()               # Gestione stati e log
+        self.auto_recovery = AutoRecoverySystem(              # Ripristino automatico
+            self.azure_controller, 
+            self.status_manager, 
+            self.operation_tracker
+        )
+        
+        self.is_monitoring = False    # Flag stato monitoraggio
+        self.monitor_thread = None    # Riferimento al thread di monitoraggio
     
     def start_monitoring(self):
+        """Avvia il monitoraggio"""
         if self.is_monitoring:
+            print("Monitoraggio già in esecuzione")
             return
+        
         self.is_monitoring = True
+        # Crea thread separato per non bloccare l'applicazione principale
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
-        print(" Monitoraggio avviato")
+        print("Servizio di monitoraggio AVVIATO")
+        
+        # Log iniziale nel database
+        self.status_manager.log_event("system", "running", "monitoring_started", 
+                                    "Monitoraggio VM Azure avviato")
     
     def stop_monitoring(self):
-        self.is_monitoring = False
+        """Ferma il monitoraggio"""
+        self.is_monitoring = False  # Cambia flag per fermare il loop
         if self.monitor_thread:
-            self.monitor_thread.join(timeout=5)
-        print(" Monitoraggio fermato")
+            self.monitor_thread.join(timeout=5)  # Aspetta il thread (max 5 secondi)
+        print("Servizio di monitoraggio FERMATO")
+        
+        # Log finale nel database
+        self.status_manager.log_event("system", "stopped", "monitoring_stopped", 
+                                    "Monitoraggio VM Azure fermato")
+    
+    # === CONTROLLI MANUALI ===
     
     def restart_vm(self, vm_name):
+        """Riavvia una VM specifica (chiamata manuale)"""
         vm_config = self._get_vm_config(vm_name)
         if not vm_config:
-            return False, "VM non trovata"
+            return False, f"VM {vm_name} non trovata"
         
-        op_id = f"restart_{vm_name}_{int(time.time())}"
-        self.manual_operations[op_id] = {
-            'type': 'restart', 'vm_name': vm_name, 'status': 'in_progress',
-            'start_time': datetime.now(), 'message': 'Riavvio in corso...'
-        }
+        # Registra operazione manuale nel tracker
+        op_id = self.operation_tracker.start_manual_operation('restart', vm_name)
         
+        # Esegui il riavvio tramite Azure controller
         success, message = self.azure_controller.restart_vm(vm_config)
         
+        # Aggiorna stato operazione nel tracker
+        self.operation_tracker.complete_operation(op_id, success, message)
+        
+        # Aggiorna cache stato se riavvio riuscito
         if success:
-            self.manual_operations[op_id].update({'status': 'completed', 'message': 'Completato'})
-            self.vm_states[vm_name] = 'running'
-        else:
-            self.manual_operations[op_id].update({'status': 'failed', 'message': message})
+            self.status_manager.update_vm_status(vm_name, 'running')
         
         return success, message
     
     def start_vm(self, vm_name):
+        """Avvia una VM specifica (chiamata manuale)"""
         vm_config = self._get_vm_config(vm_name)
         if not vm_config:
-            return False, "VM non trovata"
+            return False, f"VM {vm_name} non trovata"
         
+        op_id = self.operation_tracker.start_manual_operation('start', vm_name)
         success, message = self.azure_controller.start_vm(vm_config)
+        self.operation_tracker.complete_operation(op_id, success, message)
+        
         if success:
-            self.vm_states[vm_name] = 'running'
+            self.status_manager.update_vm_status(vm_name, 'running')
+        
         return success, message
     
     def stop_vm(self, vm_name):
+        """Arresta una VM specifica (chiamata manuale)"""
         vm_config = self._get_vm_config(vm_name)
         if not vm_config:
-            return False, "VM non trovata"
+            return False, f"VM {vm_name} non trovata"
         
+        op_id = self.operation_tracker.start_manual_operation('stop', vm_name)
         success, message = self.azure_controller.stop_vm(vm_config)
+        self.operation_tracker.complete_operation(op_id, success, message)
+        
         if success:
-            self.vm_states[vm_name] = 'stopped'
+            self.status_manager.update_vm_status(vm_name, 'stopped')
+        
         return success, message
     
+    # === METODI PUBBLICI PER WEB APP ===
+    
     def get_manual_operations(self, vm_name=None):
-        if vm_name:
-            return {k: v for k, v in self.manual_operations.items() if v['vm_name'] == vm_name}
-        return self.manual_operations
+        """Ottiene le operazioni manuali per la web app"""
+        return self.operation_tracker.get_operations_for_vm(vm_name)
     
     def get_vm_states(self):
-        return self.vm_states.copy()
+        """Ottiene gli stati correnti delle VM per la web app"""
+        return self.status_manager.get_all_states()
+    
+    def get_monitoring_status(self):
+        """Ottiene lo stato del monitoraggio per la web app"""
+        return self.is_monitoring
+    
+    # === METODI PRIVATI ===
     
     def _get_vm_config(self, vm_name):
-        for vm in AZURE_CONFIG["vms"]:
+        """Trova la configurazione di una VM per nome"""
+        for vm in Config.NODES:
             if vm["name"] == vm_name:
                 return vm
-        return None
+        return None  # Se VM non trovata
     
     def _monitor_loop(self):
-        while self.is_monitoring:
-            for vm_config in AZURE_CONFIG["vms"]:
-                try:
-                    status = self.azure_controller.get_vm_status(vm_config)
-                    self.vm_states[vm_config["name"]] = status
-                    print(f" {vm_config['display_name']}: {status}")
-                except Exception as e:
-                    print(f" Errore monitoraggio {vm_config['name']}: {e}")
-            time.sleep(30)
+        """Loop principale di monitoraggio - eseguito in thread separato"""
+        cycle_count = 0
+        
+        while self.is_monitoring:  # Continua finché il flag è True
+            try:
+                cycle_count += 1
+                print(f"CICLO DI MONITORAGGIO #{cycle_count}")
+                self._check_all_vms()  # Controlla tutte le VM
+                time.sleep(Config.POLLING_INTERVAL)  # Aspetta prima del prossimo ciclo
+            except Exception as e:
+                print(f"Errore nel loop di monitoraggio: {e}")
+                time.sleep(5)  # Aspetta breve in caso di errore
+    
+    def _check_all_vms(self):
+        """Controlla tutte le VM Azure configurate"""
+        for vm_config in Config.NODES:
+            vm_name = vm_config["name"]
+            display_name = vm_config["display_name"]
+            
+            try:
+                # Controlla stato REALE della VM da Azure
+                previous_status = self.status_manager.get_vm_status(vm_name)  # Stato precedente dalla cache
+                current_status = self.azure_controller.get_vm_status(vm_config)  # Stato attuale da Azure
+                
+                # Aggiorna cache con stato attuale
+                self.status_manager.update_vm_status(vm_name, current_status)
+                
+                # Log stato normale nel database
+                self.status_manager.log_event(vm_name, current_status, "checked", 
+                                            f"VM: {display_name}")
+                
+                print(f"{display_name} ({vm_name}): {current_status.upper()}")
+                
+                # Gestione VM spenta con ripristino automatico
+                if (current_status == 'stopped' and 
+                    self.auto_recovery.should_handle_stopped_vm(vm_name)):
+                    # VM spenta non programmata - attiva ripristino automatico
+                    self.auto_recovery.handle_stopped_vm(vm_config, previous_status)
+                    
+                elif current_status == 'stopped':
+                    # VM spenta manualmente - solo log informativo
+                    print(f"VM SPENTA (MANUALE): {display_name}")
+                    self.status_manager.log_event(vm_name, current_status, "expected_stop", 
+                                                f"VM {display_name} spenta manualmente")
+                        
+            except Exception as e:
+                # Gestione errori durante il controllo della VM
+                error_msg = f"Errore controllo {vm_name}: {str(e)}"
+                print(f"{error_msg}")
+                self.status_manager.log_event(vm_name, "unknown", "check_failed", error_msg)
 
-# Istanza globale
+# Istanza globale del servizio di monitoraggio
 monitor_service = MonitorService()
 
-# Funzioni esportate
+# === INTERFACCIA PER WEB APP ===
+# Le seguenti funzioni forniscono un'interfaccia semplice per la web app
+# Mantenendo compatibilità con il codice esistente
+
 def start_monitoring():
+    """Avvia il monitoraggio - interfaccia per web app"""
     monitor_service.start_monitoring()
 
 def stop_monitoring():
+    """Ferma il monitoraggio - interfaccia per web app"""
     monitor_service.stop_monitoring()
 
 def get_monitoring_status():
+    """Restituisce stato monitoraggio - interfaccia per web app"""
     return monitor_service.is_monitoring
 
 def restart_vm(vm_name):
+    """Riavvia una VM - interfaccia per web app"""
     return monitor_service.restart_vm(vm_name)
 
 def start_vm(vm_name):
+    """Avvia una VM - interfaccia per web app"""
     return monitor_service.start_vm(vm_name)
 
 def stop_vm(vm_name):
+    """Arresta una VM - interfaccia per web app"""
     return monitor_service.stop_vm(vm_name)
 
 def get_manual_operations(vm_name=None):
+    """Ottiene operazioni manuali - interfaccia per web app"""
     return monitor_service.get_manual_operations(vm_name)
 
 def get_vm_states():
+    """Ottiene stati VM - interfaccia per web app"""
     return monitor_service.get_vm_states()
+
+# Test del sistema
+if __name__ == "__main__":
+    print("TEST - Sistema di monitoraggio modulare")
+    start_monitoring()
+    
+    try:
+        time.sleep(120)  # Test per 2 minuti
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_monitoring()
