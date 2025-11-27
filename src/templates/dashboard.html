@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VeloCloudiX - Dashboard Azure VM</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .status-running { color: #28a745; font-weight: bold; }
+        .status-stopped { color: #dc3545; font-weight: bold; }
+        .status-unknown { color: #ffc107; font-weight: bold; }
+        .status-not_found { color: #6c757d; font-weight: bold; }
+        .status-error { color: #dc3545; font-weight: bold; }
+        .monitoring-active { background: linear-gradient(45deg, #d4edda, #c3e6cb); }
+        .monitoring-inactive { background: linear-gradient(45deg, #f8d7da, #f5c6cb); }
+        .blink { animation: blinker 2s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0.7; } }
+        .log-table { font-size: 0.85em; }
+        .vm-card { transition: transform 0.2s, box-shadow 0.2s; }
+        .vm-card:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .operation-in_progress { background-color: #fff3cd; }
+        .operation-completed { background-color: #d1edff; }
+        .operation-failed { background-color: #f8d7da; }
+        .sidebar { background: #343a40; color: white; min-height: 100vh; }
+        .btn-action { min-width: 80px; }
+        .alert-operations { max-height: 200px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-md-2 sidebar p-0">
+                <div class="p-3">
+                    <h4 class="text-center mb-4">
+                        <i class="fas fa-cloud"></i><br>
+                        VeloCloudiX
+                    </h4>
+                    
+                    <div class="user-info text-center mb-4">
+                        <i class="fas fa-user-circle fa-2x mb-2"></i>
+                        <p class="mb-1"><strong>{{ username }}</strong></p>
+                        <small class="text-muted">{{ session.role }}</small>
+                    </div>
+
+                    <nav class="nav flex-column">
+                        <a class="nav-link text-white active" href="#">
+                            <i class="fas fa-tachometer-alt"></i> Dashboard
+                        </a>
+                        <a class="nav-link text-white" href="/logout">
+                            <i class="fas fa-sign-out-alt"></i> Logout
+                        </a>
+                    </nav>
+
+                    <div class="mt-4 pt-4 border-top">
+                        <small class="text-muted">
+                            {% if azure_available %}
+                            <span class="text-success">✅ Azure VM Reali</span>
+                            {% else %}
+                            <span class="text-warning">⚠️ Modalità Simulazione</span>
+                            {% endif %}
+                        </small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-md-10 p-4">
+                <!-- Header -->
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h1>
+                        <i class="fas fa-tachometer-alt"></i> Dashboard Azure VM
+                    </h1>
+                    <div class="monitoring-status">
+                        {% if monitoring_status %}
+                        <span class="badge bg-success blink p-2">
+                            <i class="fas fa-play-circle"></i> MONITORAGGIO ATTIVO
+                        </span>
+                        {% else %}
+                        <span class="badge bg-secondary p-2">
+                            <i class="fas fa-stop-circle"></i> MONITORAGGIO FERMO
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Control Panel -->
+                <div class="card mb-4 {% if monitoring_status %}monitoring-active{% else %}monitoring-inactive{% endif %}">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-sliders-h"></i> Pannello di Controllo Azure
+                        </h5>
+                        <div>
+                            {% if azure_available %}
+                            <span class="badge bg-success">Azure VM Reali</span>
+                            {% else %}
+                            <span class="badge bg-warning">Modalità Simulazione</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row align-items-center">
+                            <div class="col-md-8">
+                                <p class="mb-0">
+                                    <strong>Intervallo di polling:</strong> 30 secondi<br>
+                                    <strong>VM monitorate:</strong> <span id="vmCount">{{ nodes|length }}</span> istanze Azure<br>
+                                    <strong>Ultimo aggiornamento:</strong> <span id="lastUpdate">{{ now }}</span>
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                {% if session.role == 'admin' %}
+                                    {% if monitoring_status %}
+                                    <button class="btn btn-danger btn-lg" onclick="stopMonitoring()">
+                                        <i class="fas fa-stop"></i> Ferma Monitoraggio
+                                    </button>
+                                    {% else %}
+                                    <button class="btn btn-success btn-lg" onclick="startMonitoring()">
+                                        <i class="fas fa-play"></i> Avvia Monitoraggio
+                                    </button>
+                                    {% endif %}
+                                {% else %}
+                                    <button class="btn btn-secondary btn-lg" disabled>
+                                        <i class="fas fa-lock"></i> Solo Admin
+                                    </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alert per operazioni -->
+                <div id="vmOperationsAlert" class="mb-4"></div>
+
+                <!-- Azure VM Status -->
+                <div class="row mb-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0">
+                                    <i class="fas fa-server"></i> Stato VM Azure - Controlli Manuali
+                                </h5>
+                                <div>
+                                    <button class="btn btn-sm btn-outline-primary" onclick="refreshVMStatus()">
+                                        <i class="fas fa-sync-alt"></i> Aggiorna
+                                    </button>
+                                    <span class="badge bg-info ms-2" id="activeOperations">0 operazioni attive</span>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>VM Azure</th>
+                                                <th>Stato</th>
+                                                <th>Ultimo Check</th>
+                                                <th>Operazioni Manuali</th>
+                                                <th>Azioni</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="vmTable">
+                                            {% for node in nodes %}
+                                            <tr id="vm-{{ node.name }}">
+                                                <td>
+                                                    <i class="fas fa-cloud text-primary"></i> 
+                                                    <strong>{{ node.display_name }}</strong>
+                                                    <br><small class="text-muted">{{ node.name }}</small>
+                                                </td>
+                                                <td>
+                                                    <span class="status-{{ node.status }}" id="status-{{ node.name }}">
+                                                        <i class="fas fa-circle"></i> {{ node.status | upper }}
+                                                    </span>
+                                                </td>
+                                                <td id="timestamp-{{ node.name }}">
+                                                    {{ node.timestamp[:19] if node.timestamp else 'N/A' }}
+                                                </td>
+                                                <td id="operations-{{ node.name }}">
+                                                    <small class="text-muted">Nessuna operazione manuale</small>
+                                                </td>
+                                                <td>
+                                                    {% if session.role == 'admin' and azure_available %}
+                                                    <div class="btn-group btn-group-sm">
+                                                        <button class="btn btn-outline-success btn-action" onclick="startVM('{{ node.name }}')" 
+                                                                title="Avvia VM" id="btn-start-{{ node.name }}">
+                                                            <i class="fas fa-play"></i> Start
+                                                        </button>
+                                                        <button class="btn btn-outline-warning btn-action" onclick="restartVM('{{ node.name }}')"
+                                                                title="Riavvia VM" id="btn-restart-{{ node.name }}">
+                                                            <i class="fas fa-redo"></i> Restart
+                                                        </button>
+                                                        <button class="btn btn-outline-danger btn-action" onclick="stopVM('{{ node.name }}')"
+                                                                title="Arresta VM" id="btn-stop-{{ node.name }}">
+                                                            <i class="fas fa-stop"></i> Stop
+                                                        </button>
+                                                    </div>
+                                                    {% elif not azure_available %}
+                                                    <small class="text-muted">Azure non disponibile</small>
+                                                    {% else %}
+                                                    <small class="text-muted">Solo Admin</small>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Real-time Logs -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-list-alt"></i> Log Eventi - Tempo Reale
+                        </h5>
+                        <div>
+                            <button class="btn btn-sm btn-outline-primary" onclick="refreshLogs()">
+                                <i class="fas fa-sync-alt"></i> Aggiorna
+                            </button>
+                            <span class="badge bg-info ms-2" id="logCount">{{ recent_events|length }} eventi</span>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                            <table class="table table-sm table-hover mb-0 log-table">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>VM</th>
+                                        <th>Stato</th>
+                                        <th>Azione</th>
+                                        <th>Dettagli</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logTable">
+                                    {% for event in recent_events %}
+                                    <tr>
+                                        <td><small>{{ event[1][:19] if event[1] else 'N/A' }}</small></td>
+                                        <td><small><strong>{{ event[0] }}</strong></small></td>
+                                        <td>
+                                            <small>
+                                                <span class="status-{{ event[2] }}">
+                                                    {{ event[2] | upper }}
+                                                </span>
+                                            </small>
+                                        </td>
+                                        <td><small><span class="badge bg-secondary">{{ event[3] or 'Nessuna' }}</span></small></td>
+                                        <td><small>{{ event[4] or '' }}</small></td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // ========== FUNZIONI PER MONITORAGGIO ==========
+        async function startMonitoring() {
+            try {
+                const response = await fetch('/api/start_monitoring', { method: 'POST' });
+                const result = await response.json();
+                showAlert(result.message, result.status);
+                if (result.status === 'success') {
+                    setTimeout(() => location.reload(), 1000);
+                }
+            } catch (error) {
+                showAlert('❌ Errore: ' + error, 'error');
+            }
+        }
+
+        async function stopMonitoring() {
+            try {
+                const response = await fetch('/api/stop_monitoring', { method: 'POST' });
+                const result = await response.json();
+                showAlert(result.message, result.status);
+                if (result.status === 'success') {
+                    setTimeout(() => location.reload(), 1000);
+                }
+            } catch (error) {
+                showAlert('❌ Errore: ' + error, 'error');
+            }
+        }
+
+        // ========== FUNZIONI PER CONTROLLI MANUALI ==========
+        async function restartVM(vmName) {
+            if (!confirm(`🔄 Sei sicuro di voler riavviare la VM ${vmName}?\n\nL'operazione richiederà 1-2 minuti.`)) return;
+            
+            // Disabilita pulsante durante l'operazione
+            disableVMActions(vmName, true);
+            showAlert(`🔄 Riavvio manuale VM ${vmName} in corso...`, 'info');
+            
+            try {
+                const response = await fetch(`/api/vm/${vmName}/restart`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert(`✅ ${result.message}`, 'success');
+                } else {
+                    showAlert(`❌ ${result.message}`, 'error');
+                }
+                
+                // Aggiorna lo stato delle operazioni manuali
+                refreshManualOperations(vmName);
+                // Aggiorna lo stato dopo qualche secondo
+                setTimeout(() => {
+                    refreshVMStatus();
+                    disableVMActions(vmName, false);
+                }, 10000);
+                
+            } catch (error) {
+                showAlert('❌ Errore: ' + error, 'error');
+                disableVMActions(vmName, false);
+            }
+        }
+
+        async function startVM(vmName) {
+            if (!confirm(`▶️ Sei sicuro di voler avviare la VM ${vmName}?\n\nL'operazione richiederà 1-2 minuti.`)) return;
+            
+            disableVMActions(vmName, true);
+            showAlert(`▶️ Avvio manuale VM ${vmName} in corso...`, 'info');
+            
+            try {
+                const response = await fetch(`/api/vm/${vmName}/start`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert(`✅ ${result.message}`, 'success');
+                } else {
+                    showAlert(`❌ ${result.message}`, 'error');
+                }
+                
+                refreshManualOperations(vmName);
+                setTimeout(() => {
+                    refreshVMStatus();
+                    disableVMActions(vmName, false);
+                }, 10000);
+                
+            } catch (error) {
+                showAlert('❌ Errore: ' + error, 'error');
+                disableVMActions(vmName, false);
+            }
+        }
+
+        async function stopVM(vmName) {
+            if (!confirm(`⏹️ Sei sicuro di voler arrestare la VM ${vmName}?\n\nI servizi in esecuzione si fermeranno.`)) return;
+            
+            disableVMActions(vmName, true);
+            showAlert(`⏹️ Arresto manuale VM ${vmName} in corso...`, 'info');
+            
+            try {
+                const response = await fetch(`/api/vm/${vmName}/stop`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert(`✅ ${result.message}`, 'success');
+                } else {
+                    showAlert(`❌ ${result.message}`, 'error');
+                }
+                
+                refreshManualOperations(vmName);
+                setTimeout(() => {
+                    refreshVMStatus();
+                    disableVMActions(vmName, false);
+                }, 10000);
+                
+            } catch (error) {
+                showAlert('❌ Errore: ' + error, 'error');
+                disableVMActions(vmName, false);
+            }
+        }
+
+        // ========== FUNZIONI DI SUPPORTO ==========
+        function disableVMActions(vmName, disabled) {
+            const buttons = [
+                document.getElementById(`btn-start-${vmName}`),
+                document.getElementById(`btn-restart-${vmName}`),
+                document.getElementById(`btn-stop-${vmName}`)
+            ];
+            
+            buttons.forEach(btn => {
+                if (btn) {
+                    btn.disabled = disabled;
+                    if (disabled) {
+                        btn.classList.add('disabled');
+                    } else {
+                        btn.classList.remove('disabled');
+                    }
+                }
+            });
+        }
+
+        async function refreshManualOperations(vmName) {
+            try {
+                const response = await fetch(`/api/vm/${vmName}/manual_operations`);
+                const data = await response.json();
+                
+                const operationsElement = document.getElementById(`operations-${vmName}`);
+                if (operationsElement && data.operations) {
+                    const activeOps = data.operations.filter(op => op.status === 'in_progress');
+                    const latestOp = data.operations[0];
+                    
+                    if (activeOps.length > 0) {
+                        // Mostra operazioni attive
+                        operationsElement.innerHTML = `
+                            <div class="alert alert-warning p-2 mb-1">
+                                <i class="fas fa-sync fa-spin"></i> 
+                                ${activeOps.length} operazione(i) in corso
+                            </div>
+                        `;
+                    } else if (latestOp) {
+                        // Mostra ultima operazione completata
+                        let badgeClass = 'bg-secondary';
+                        let icon = '🔹';
+                        if (latestOp.status === 'completed') {
+                            badgeClass = 'bg-success';
+                            icon = '✅';
+                        }
+                        if (latestOp.status === 'failed') {
+                            badgeClass = 'bg-danger';
+                            icon = '❌';
+                        }
+                        
+                        const opTime = latestOp.end_time ? new Date(latestOp.end_time).toLocaleTimeString() : '';
+                        const opType = latestOp.type === 'restart' ? 'Riavvio' : 
+                                      latestOp.type === 'start' ? 'Avvio' : 'Arresto';
+                        
+                        operationsElement.innerHTML = `
+                            <span class="badge ${badgeClass}">
+                                ${icon} ${opType}
+                            </span>
+                            <br><small>${opTime} - ${latestOp.message}</small>
+                        `;
+                    } else {
+                        operationsElement.innerHTML = '<small class="text-muted">Nessuna operazione manuale</small>';
+                    }
+                }
+                
+                // Aggiorna contatore operazioni attive
+                updateActiveOperationsCount();
+                
+            } catch (error) {
+                console.error('Errore aggiornamento operazioni manuali:', error);
+            }
+        }
+
+        async function updateActiveOperationsCount() {
+            try {
+                let totalActive = 0;
+                const vms = document.querySelectorAll('[id^="vm-"]');
+                
+                for (const vmElement of vms) {
+                    const vmName = vmElement.id.replace('vm-', '');
+                    const response = await fetch(`/api/vm/${vmName}/manual_operations`);
+                    const data = await response.json();
+                    
+                    if (data.operations) {
+                        totalActive += data.operations.filter(op => op.status === 'in_progress').length;
+                    }
+                }
+                
+                document.getElementById('activeOperations').textContent = 
+                    `${totalActive} operazione(i) attiva(e)`;
+                    
+            } catch (error) {
+                console.error('Errore conteggio operazioni attive:', error);
+            }
+        }
+
+        async function refreshVMStatus() {
+            try {
+                // Aggiorna stati dalle API
+                const response = await fetch('/api/vm/states');
+                const data = await response.json();
+                
+                if (data.states) {
+                    Object.entries(data.states).forEach(([vmName, status]) => {
+                        const statusElement = document.getElementById(`status-${vmName}`);
+                        if (statusElement) {
+                            statusElement.className = `status-${status}`;
+                            let icon = '🔴';
+                            if (status === 'running') icon = '🟢';
+                            if (status === 'unknown') icon = '🟡';
+                            
+                            statusElement.innerHTML = `${icon} ${status.toUpperCase()}`;
+                        }
+                    });
+                }
+                
+                // Aggiorna timestamp
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+                
+            } catch (error) {
+                console.error('Errore aggiornamento stati VM:', error);
+            }
+        }
+
+        async function refreshLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const logs = await response.json();
+                
+                const tbody = document.getElementById('logTable');
+                tbody.innerHTML = '';
+                
+                logs.forEach(log => {
+                    const row = document.createElement('tr');
+                    
+                    let statusIcon = '🟡';
+                    let statusClass = 'status-unknown';
+                    if (log.status === 'running') {
+                        statusIcon = '🟢';
+                        statusClass = 'status-running';
+                    } else if (log.status === 'stopped') {
+                        statusIcon = '🔴';
+                        statusClass = 'status-stopped';
+                    }
+                    
+                    row.innerHTML = `
+                        <td><small>${log.timestamp ? log.timestamp.substring(0, 19) : 'N/A'}</small></td>
+                        <td><small><strong>${log.node_id}</strong></small></td>
+                        <td><small><span class="${statusClass}">${statusIcon} ${log.status.toUpperCase()}</span></small></td>
+                        <td><small><span class="badge bg-secondary">${log.action_taken || 'Nessuna'}</span></small></td>
+                        <td><small>${log.notes || ''}</small></td>
+                    `;
+                    
+                    tbody.appendChild(row);
+                });
+                
+                // Aggiorna contatore
+                document.getElementById('logCount').textContent = logs.length + ' eventi';
+                
+            } catch (error) {
+                console.error('Errore aggiornamento log:', error);
+            }
+        }
+
+        // ========== UTILITY FUNCTIONS ==========
+        function showAlert(message, type = 'info') {
+            const alertDiv = document.getElementById('vmOperationsAlert');
+            const alertClass = type === 'error' ? 'alert-danger' : 
+                              type === 'success' ? 'alert-success' : 'alert-info';
+            
+            alertDiv.innerHTML = `
+                <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
+                    <strong>${type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'} </strong>
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+            
+            // Auto-rimuovi dopo 5 secondi
+            setTimeout(() => {
+                if (alertDiv.firstChild) {
+                    alertDiv.firstChild.remove();
+                }
+            }, 5000);
+        }
+
+        // ========== AUTO-REFRESH ==========
+        // Aggiorna automaticamente ogni 5 secondi durante il monitoraggio
+        setInterval(() => {
+            if (document.querySelector('.monitoring-active')) {
+                refreshVMStatus();
+                refreshLogs();
+                
+                // Aggiorna anche le operazioni manuali per tutte le VM
+                document.querySelectorAll('[id^="vm-"]').forEach(element => {
+                    const vmName = element.id.replace('vm-', '');
+                    refreshManualOperations(vmName);
+                });
+            }
+        }, 5000);
+        
+        // Aggiorna al caricamento della pagina
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshVMStatus();
+            refreshLogs();
+            
+            // Aggiorna operazioni manuali per tutte le VM
+            document.querySelectorAll('[id^="vm-"]').forEach(element => {
+                const vmName = element.id.replace('vm-', '');
+                refreshManualOperations(vmName);
+            });
+        });
+    </script>
+</body>
+</html>
