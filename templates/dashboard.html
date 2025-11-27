@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VeloCloudiX - Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .status-running { color: #28a745; }
+        .status-stopped { color: #dc3545; }
+        .status-unknown { color: #ffc107; }
+        .monitoring-active { background: #d4edda; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-md-2 bg-dark text-white p-3">
+                <h4>VeloCloudiX</h4>
+                <p><strong>{{ username }}</strong><br><small>{{ session.role }}</small></p>
+                <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-md-10 p-4">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h1>Dashboard Azure VM</h1>
+                    <div>
+                        {% if monitoring_status %}
+                        <span class="badge bg-success">MONITORAGGIO ATTIVO</span>
+                        {% else %}
+                        <span class="badge bg-secondary">MONITORAGGIO FERMO</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Control Panel -->
+                <div class="card mb-4 {% if monitoring_status %}monitoring-active{% endif %}">
+                    <div class="card-body">
+                        <div class="row align-items-center">
+                            <div class="col-md-8">
+                                <p class="mb-0">
+                                    <strong>Intervallo polling:</strong> 30 secondi<br>
+                                    <strong>VM monitorate:</strong> {{ nodes|length }}<br>
+                                    <strong>Ultimo aggiornamento:</strong> <span id="lastUpdate">{{ now }}</span>
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                {% if session.role == 'admin' %}
+                                    {% if monitoring_status %}
+                                    <button class="btn btn-danger" onclick="stopMonitoring()">Ferma Monitoraggio</button>
+                                    {% else %}
+                                    <button class="btn btn-success" onclick="startMonitoring()">Avvia Monitoraggio</button>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- VM Status -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Stato VM Azure - Controlli Manuali</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>VM Azure</th>
+                                        <th>Stato</th>
+                                        <th>Ultimo Check</th>
+                                        <th>Azioni</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for node in nodes %}
+                                    <tr>
+                                        <td><strong>{{ node.display_name }}</strong><br><small>{{ node.name }}</small></td>
+                                        <td>
+                                            <span class="status-{{ node.status }}" id="status-{{ node.name }}">
+                                                {{ node.status | upper }}
+                                            </span>
+                                        </td>
+                                        <td>{{ node.timestamp[:19] if node.timestamp else 'N/A' }}</td>
+                                        <td>
+                                            {% if session.role == 'admin' %}
+                                            <div class="btn-group btn-group-sm">
+                                                <button class="btn btn-outline-success" onclick="startVM('{{ node.name }}')">Start</button>
+                                                <button class="btn btn-outline-warning" onclick="restartVM('{{ node.name }}')">Restart</button>
+                                                <button class="btn btn-outline-danger" onclick="stopVM('{{ node.name }}')">Stop</button>
+                                            </div>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Log Eventi</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>VM</th>
+                                        <th>Stato</th>
+                                        <th>Azione</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logTable">
+                                    {% for event in recent_events %}
+                                    <tr>
+                                        <td><small>{{ event[1][:19] if event[1] else 'N/A' }}</small></td>
+                                        <td><small>{{ event[0] }}</small></td>
+                                        <td><small class="status-{{ event[2] }}">{{ event[2] | upper }}</small></td>
+                                        <td><small>{{ event[3] or 'Nessuna' }}</small></td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        async function startMonitoring() {
+            const response = await fetch('/api/start_monitoring', { method: 'POST' });
+            const result = await response.json();
+            alert(result.message);
+            location.reload();
+        }
+
+        async function stopMonitoring() {
+            const response = await fetch('/api/stop_monitoring', { method: 'POST' });
+            const result = await response.json();
+            alert(result.message);
+            location.reload();
+        }
+
+        async function restartVM(vmName) {
+            if (!confirm(`Riavviare ${vmName}?`)) return;
+            const response = await fetch(`/api/vm/${vmName}/restart`, { method: 'POST' });
+            const result = await response.json();
+            alert(result.message);
+        }
+
+        async function startVM(vmName) {
+            if (!confirm(`Avviare ${vmName}?`)) return;
+            const response = await fetch(`/api/vm/${vmName}/start`, { method: 'POST' });
+            const result = await response.json();
+            alert(result.message);
+        }
+
+        async function stopVM(vmName) {
+            if (!confirm(`Arrestare ${vmName}?`)) return;
+            const response = await fetch(`/api/vm/${vmName}/stop`, { method: 'POST' });
+            const result = await response.json();
+            alert(result.message);
+        }
+
+        // Auto-refresh
+        setInterval(async () => {
+            const response = await fetch('/api/logs');
+            const logs = await response.json();
+            
+            const tbody = document.getElementById('logTable');
+            tbody.innerHTML = '';
+            
+            logs.forEach(log => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td><small>${log.timestamp?.substring(0, 19) || 'N/A'}</small></td>
+                    <td><small>${log.node_id}</small></td>
+                    <td><small class="status-${log.status}">${log.status.toUpperCase()}</small></td>
+                    <td><small>${log.action_taken || 'Nessuna'}</small></td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+        }, 5000);
+    </script>
+</body>
+</html>
