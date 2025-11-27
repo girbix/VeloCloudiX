@@ -1,21 +1,58 @@
-# Import di tutte le librerie necessarie
 from flask import Flask, render_template, request, jsonify, session, redirect
 import sqlite3
 import os
 from datetime import datetime
 from src.auth import login_required, admin_required, USERS
-from src.azure_monitor import (
-    start_monitoring, stop_monitoring, get_monitoring_status,
-    restart_vm, start_vm, stop_vm, get_manual_operations, get_vm_states
-)
 
-# Linea 1-8: INIZIALIZZAZIONE
-# Creazione dell'app Flask e configurazione
+# Gestione import con fallback per sviluppo
+try:
+    from src.azure_monitor import (
+        start_monitoring, stop_monitoring, get_monitoring_status,
+        restart_vm, start_vm, stop_vm, get_manual_operations, get_vm_states
+    )
+    AZURE_MONITOR_AVAILABLE = True
+    print("Sistema di monitoraggio Azure VM caricato")
+except ImportError as e:
+    print(f"Monitor Azure non disponibile: {e}")
+    # Fallback al monitor semplice
+    AZURE_MONITOR_AVAILABLE = False
+    monitoring_status = False
+    
+    def start_monitoring():
+        global monitoring_status
+        monitoring_status = True
+        print("Monitoraggio base avviato")
+    
+    def stop_monitoring():
+        global monitoring_status  
+        monitoring_status = False
+        print("Monitoraggio base fermato")
+    
+    def get_monitoring_status():
+        global monitoring_status
+        return monitoring_status
+    
+    # Funzioni placeholder per Azure
+    def restart_vm(vm_name):
+        return False, "Sistema Azure non disponibile"
+    
+    def start_vm(vm_name):
+        return False, "Sistema Azure non disponibile"
+    
+    def stop_vm(vm_name):
+        return False, "Sistema Azure non disponibile"
+    
+    def get_manual_operations(vm_name=None):
+        return {}
+    
+    def get_vm_states():
+        return {}
+
 app = Flask(__name__)
-app.secret_key = 'velocloudix-secret-2024'  # Chiave per cifrare le sessioni
-DB_PATH = 'velocloudix.db'  # Percorso del database SQLite
+app.secret_key = 'velocloudix-secret-2024'
+DB_PATH = 'velocloudix.db'
 
-# Linea 11-18: ROTTA PRINCIPALE /
+#  ROTTA PRINCIPALE /
 @app.route('/')
 def index():
     # Se l'utente è già loggato (session contiene username)
@@ -23,7 +60,7 @@ def index():
         return redirect('/dashboard')  # Reindirizza alla dashboard
     return redirect('/login')  # Altrimenti alla login
 
-# Linea 21-35: ROTTA LOGIN (GET e POST)
+# ROTTA LOGIN (GET e POST)
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     # Se il metodo è POST (form inviato)
@@ -41,13 +78,13 @@ def login():
     # Se metodo GET, mostra semplicemente la pagina login
     return render_template('login.html')
 
-# Linea 38-41: ROTTA LOGOUT
+# ROTTA LOGOUT
 @app.route('/logout')
 def logout():
     session.clear()          # Cancella tutti i dati della sessione
     return redirect('/login') # Reindirizza al login
 
-# Linea 44-85: DASHBOARD PRINCIPALE
+# DASHBOARD PRINCIPALE
 @app.route('/dashboard')
 @login_required  # Decoratore: richiede il login per accedere
 def dashboard():
@@ -99,21 +136,21 @@ def dashboard():
                          username=session['username'],   # Nome utente loggato
                          azure_available=True)          # Flag Azure disponibile
 
-# Linea 88-94: API PER AVVIARE MONITORAGGIO
+#  API PER AVVIARE MONITORAGGIO
 @app.route('/api/start_monitoring', methods=['POST'])
 @admin_required  # Solo gli admin possono avviare il monitoraggio
 def api_start_monitoring():
     start_monitoring()  # Chiama la funzione del modulo azure_monitor
     return jsonify({'status': 'success', 'message': 'Monitoraggio avviato'})
 
-# Linea 97-103: API PER FERMARE MONITORAGGIO
+#  API PER FERMARE MONITORAGGIO
 @app.route('/api/stop_monitoring', methods=['POST'])
 @admin_required  # Solo admin possono fermare
 def api_stop_monitoring():
     stop_monitoring()   # Ferma il monitoraggio
     return jsonify({'status': 'success', 'message': 'Monitoraggio fermato'})
 
-# Linea 106-120: API PER RIAVVIARE VM
+# API PER RIAVVIARE VM
 @app.route('/api/vm/<vm_name>/restart', methods=['POST'])
 @admin_required  # Solo admin possono riavviare
 def api_restart_vm(vm_name):
@@ -131,7 +168,7 @@ def api_restart_vm(vm_name):
     # Restituisce risultato come JSON
     return jsonify({'status': 'success' if success else 'error', 'message': message})
 
-# Linea 123-137: API PER AVVIARE VM (simile a restart)
+# API PER AVVIARE VM (simile a restart)
 @app.route('/api/vm/<vm_name>/start', methods=['POST'])
 @admin_required
 def api_start_vm(vm_name):
@@ -146,7 +183,7 @@ def api_start_vm(vm_name):
     
     return jsonify({'status': 'success' if success else 'error', 'message': message})
 
-# Linea 140-154: API PER FERMARE VM (simile a restart)
+# API PER FERMARE VM (simile a restart)
 @app.route('/api/vm/<vm_name>/stop', methods=['POST'])
 @admin_required
 def api_stop_vm(vm_name):
@@ -161,7 +198,7 @@ def api_stop_vm(vm_name):
     
     return jsonify({'status': 'success' if success else 'error', 'message': message})
 
-# Linea 157-175: API PER OTTENERE OPERAZIONI MANUALI DI UNA VM
+# API PER OTTENERE OPERAZIONI MANUALI DI UNA VM
 @app.route('/api/vm/<vm_name>/operations')
 @login_required  # Richiede login ma non necessariamente admin
 def api_vm_operations(vm_name):
@@ -185,7 +222,7 @@ def api_vm_operations(vm_name):
     
     return jsonify({'operations': serializable_ops})
 
-# Linea 178-191: API PER OTTENERE I LOG
+# API PER OTTENERE I LOG
 @app.route('/api/logs')
 @login_required
 def api_logs():
@@ -199,7 +236,7 @@ def api_logs():
     conn.close()
     return jsonify(logs)  # Restituisce come JSON
 
-# Linea 194-200: AVVIO APPLICAZIONE
+# AVVIO APPLICAZIONE
 if __name__ == '__main__':
     from src.database import init_database
     init_database()  # Inizializza il database

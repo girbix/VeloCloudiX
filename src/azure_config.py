@@ -1,6 +1,6 @@
 from azure.identity import AzureCliCredential
 
-# Linea 3-18: CONFIGURAZIONE AZURE
+# Linea 3-21: CONFIGURAZIONE AZURE
 AZURE_CONFIG = {
     "subscription_id": "9cf5c793-e6a4-4118-95dd-f0584e1c421f",  # ID sottoscrizione Azure
     "resource_group": "VeloCloudix",  # Gruppo di risorse
@@ -20,6 +20,6 @@ AZURE_CONFIG = {
     ]
 }
 
-# Linea 21-23: FUNZIONE PER OTTENERE CREDENZIALI AZURE
+# Linea 23-25: FUNZIONE PER OTTENERE CREDENZIALI AZURE
 def get_azure_credentials():
     return AzureCliCredential()  # Usa Azure CLI per autenticazione

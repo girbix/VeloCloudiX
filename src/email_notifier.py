@@ -7,8 +7,8 @@ Gestisce l'invio di email per:
 """
 
 import smtplib
-from email.mime.text import MimeText
-from email.mime.multipart import MimeMultipart
+from email.mime.text import MIMEText  # CORRETTO: MIMEText invece di MimeText
+from email.mime.multipart import MIMEMultipart  # CORRETTO: MIMEMultipart invece di MimeMultipart
 from datetime import datetime
 import logging
 
@@ -34,17 +34,17 @@ class EmailNotifier:
         
         # Configurazione SMTP (da personalizzare con i tuoi dati)
         self.smtp_config = {
-            'email': 'tua.email@gmail.com',      
-            'password': 'tua_password_app',      
-            'admin_email': 'admin@azienda.com'  
+            'email': 'tua.email@gmail.com',      # MODIFICARE
+            'password': 'tua_password_app',      # MODIFICARE
+            'admin_email': 'admin@azienda.com'   # MODIFICARE
         }
         
         # Template per le email
         self.email_templates = {
             'vm_stopped': {
-                'subject': ' VeloCloudiX - VM Spenta Rilevata',
+                'subject': 'VeloCloudiX - VM Spenta Rilevata',
                 'template': '''
-                <h2> Allerta VM Spenta</h2>
+                <h2>Allerta VM Spenta</h2>
                 <p><strong>VM:</strong> {vm_name}</p>
                 <p><strong>Display Name:</strong> {display_name}</p>
                 <p><strong>Ora rilevamento:</strong> {timestamp}</p>
@@ -55,9 +55,9 @@ class EmailNotifier:
                 '''
             },
             'restart_failed': {
-                'subject': ' VeloCloudiX - Riavvio Automatico Fallito',
+                'subject': 'VeloCloudiX - Riavvio Automatico Fallito',
                 'template': '''
-                <h2> Riavvio Automatico Fallito</h2>
+                <h2>Riavvio Automatico Fallito</h2>
                 <p><strong>VM:</strong> {vm_name}</p>
                 <p><strong>Display Name:</strong> {display_name}</p>
                 <p><strong>Ora tentativo:</strong> {timestamp}</p>
@@ -68,9 +68,9 @@ class EmailNotifier:
                 '''
             },
             'restart_success': {
-                'subject': ' VeloCloudiX - VM Riavviata Automaticamente',
+                'subject': 'VeloCloudiX - VM Riavviata Automaticamente',
                 'template': '''
-                <h2> VM Riavviata con Successo</h2>
+                <h2>VM Riavviata con Successo</h2>
                 <p><strong>VM:</strong> {vm_name}</p>
                 <p><strong>Display Name:</strong> {display_name}</p>
                 <p><strong>Ora riavvio:</strong> {timestamp}</p>
@@ -95,14 +95,14 @@ class EmailNotifier:
             bool: True se invio riuscito, False altrimenti
         """
         try:
-            # Crea il messaggio
-            msg = MimeMultipart()
+            # Crea il messaggio - CORRETTO: MIMEMultipart invece di MimeMultipart
+            msg = MIMEMultipart()
             msg['From'] = self.smtp_config['email']
             msg['To'] = to_email
             msg['Subject'] = subject
             
-            # Aggiungi il corpo HTML
-            msg.attach(MimeText(html_content, 'html'))
+            # Aggiungi il corpo HTML - CORRETTO: MIMEText invece di MimeText
+            msg.attach(MIMEText(html_content, 'html'))
             
             # Connetti al server SMTP
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
@@ -114,11 +114,11 @@ class EmailNotifier:
             server.sendmail(self.smtp_config['email'], to_email, text)
             server.quit()
             
-            logger.info(f" Email inviata a {to_email}: {subject}")
+            logger.info(f"Email inviata a {to_email}: {subject}")
             return True
             
         except Exception as e:
-            logger.error(f" Errore invio email a {to_email}: {e}")
+            logger.error(f"Errore invio email a {to_email}: {e}")
             return False
     
     def notify_vm_stopped(self, vm_name, display_name, status="stopped"):
@@ -208,7 +208,7 @@ def send_restart_success_alert(vm_name, display_name, previous_status):
 
 # Test del modulo
 if __name__ == "__main__":
-    print("🧪 Test sistema notifiche email...")
+    print("Test sistema notifiche email...")
     
     # Test invio email
     success = email_notifier.notify_vm_stopped(
@@ -218,6 +218,6 @@ if __name__ == "__main__":
     )
     
     if success:
-        print(" Test email riuscito!")
+        print("Test email riuscito!")
     else:
-        print(" Test email fallito - controlla configurazione SMTP")
+        print("Test email fallito - controlla configurazione SMTP")
